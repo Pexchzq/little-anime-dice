@@ -1,0 +1,71 @@
+-- Pure schedule and bounded claim owner; all external IO is injected.
+local Daily={Version='1.0.0',GameId=10708913337}
+local function finite(n)return type(n)=='number'and n==n and math.abs(n)<math.huge end
+local function integer(n)return finite(n)and n>=0 and n%1==0 end
+local function copy(t)local o={};for k,v in pairs(t)do o[k]=type(v)=='table'and copy(v)or v end;return o end
+function Daily.Observe(v)
+    if type(v)~='table'or v.gameId~=Daily.GameId then return nil,'wrong_game'end
+    if not integer(v.userId)or v.userId<1 or not integer(v.claimed)or not integer(v.total)or v.total~=7
+        or v.claimed>v.total or not integer(v.lastClaim)or not finite(v.cooldown)or v.cooldown<60
+        or v.cooldown>604800 or not finite(v.serverNow)or not finite(v.localNow)
+        or v.serverNow<1 or v.lastClaim>v.serverNow+5 or(v.claimed>0 and v.lastClaim==0)then return nil,'state_unknown'end
+    local done=v.claimed>=v.total
+    local nextAt=not done and(v.lastClaim==0 and v.serverNow or v.lastClaim+v.cooldown)or nil
+    return{schemaVersion=1,version=Daily.Version,gameId=v.gameId,userId=v.userId,claimed=v.claimed,total=v.total,
+        lastClaim=v.lastClaim,cooldown=v.cooldown,nextAt=nextAt,nextDay=not done and v.claimed+1 or nil,
+        phase=done and'complete'or(nextAt<=v.serverNow and'ready'or'waiting'),
+        serverObservedAt=v.serverNow,localObservedAt=v.localNow,serverOffset=v.serverNow-v.localNow}
+end
+function Daily.Create(deps,options)
+    options=options or{}
+    local enabled=options.enabled~=false;local stopped=false;local last={phase='loading'}
+    local pending=options.pending and copy(options.pending)or nil
+    if pending and(type(pending.key)~='string'or not integer(pending.claimed)or not integer(pending.lastClaim)
+        or not integer(pending.attempts)or pending.attempts>3
+        or not finite(pending.sentAt)or pending.sentAt<0)then pending=nil;enabled=false end
+    local busy=false;local api={}
+    local function store(s)
+        local ok,why=deps.save(copy(s))
+        if not ok then s.reason=why or'save_failed'end
+    end
+    function api.Tick()
+        if stopped or busy then return copy(last)end
+        busy=true
+        local ok,result=pcall(function()
+            local raw=deps.read();local s,why=Daily.Observe(raw)
+            if not s then last={phase='unknown',reason=why,enabled=enabled};return end
+            local key=tostring(s.claimed)..':'..tostring(s.lastClaim)
+            if pending and pending.key~=key then
+                -- A changed native claim count AND timestamp prove acceptance.
+                if s.claimed>pending.claimed and s.lastClaim>pending.lastClaim then s.reason='claim_verified';pending=nil
+                else
+                    s.nativeClaimed=s.claimed;s.claimed=pending.claimed;s.lastClaim=pending.lastClaim
+                    s.nextDay=pending.claimed+1;s.nextAt=pending.lastClaim+s.cooldown;s.phase='ready'
+                    s.enabled=enabled;s.pending=copy(pending);s.reason='state_reconciling';last=s;store(s);return
+                end
+            end
+            s.enabled=enabled;s.pending=pending and copy(pending)or nil;last=s
+            if not enabled or s.phase~='ready'then store(s);return end
+            if pending and s.serverObservedAt<pending.sentAt then s.reason='clock_reconcile';store(s);return end
+            if pending and pending.attempts>=3 then s.reason='claim_unconfirmed';store(s);return end
+            if pending and s.serverObservedAt-pending.sentAt<15 then s.reason='waiting_server_confirmation';store(s);return end
+            local candidate={key=key,claimed=s.claimed,lastClaim=s.lastClaim,attempts=pending and pending.attempts+1 or 1,sentAt=s.serverObservedAt}
+            s.pending=copy(candidate);s.reason='waiting_server_confirmation'
+            -- A durable intent is required BEFORE touching the native Claim button.
+            local saved,err=deps.save(copy(s),true)
+            if not saved then s.pending=pending and copy(pending)or nil;s.reason=err or'save_failed';return end
+            pending=candidate
+            if stopped or not enabled then s.reason='stopped';return end
+            local called,claimError=pcall(deps.claim)
+            if not called then s.reason='claim_outcome_unknown';s.detail=tostring(claimError)end
+        end)
+        busy=false
+        if not ok then last.reason='observation_error';last.detail=tostring(result)end
+        return copy(last)
+    end
+    function api.Status()return copy(last)end
+    function api.SetEnabled(value)enabled=value==true;return api.Tick()end
+    function api.Stop()enabled=false;stopped=true;last.enabled=false;return true end
+    return api
+end
+return Daily
