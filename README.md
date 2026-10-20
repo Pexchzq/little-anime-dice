@@ -1,6 +1,6 @@
 # little anime dice
 
-Anime Dice daily-login reward script. Current release: **1.0.3**.
+Anime Dice daily-login reward script. Current release: **1.0.4** (Done diagnostics).
 
 ## Run on another computer
 
@@ -10,7 +10,9 @@ Load your existing Masterp Manager client first, enter Anime Dice, then run:
 assert(loadstring(game:HttpGet("https://raw.githubusercontent.com/Pexchzq/little-anime-dice/main/main.lua")))()
 ```
 
-`main.lua` is the complete self-contained 1.0.3 bundle. No source folders or Mac-specific paths are needed on the target computer. It does not install or download the Masterp client. Configure your executor's AutoExecute yourself if you want this script loaded on each visit.
+`main.lua` is the complete self-contained 1.0.4 bundle. No source folders or Mac-specific paths are needed on the target computer. It does not install or download the Masterp client. Configure your executor's AutoExecute yourself if you want this script loaded on each visit.
+
+Version 1.0.4 adds `[DICE-DEBUG-104]` console diagnostics for missing Done. To bypass cached older responses, use `main.lua?v=1.0.4`. Capture the summary/gate/callback lines after about 15 seconds, or run `_G.DiceDailyLogin.Debug()` for a read-only summary. Claim and Done eligibility/deduplication rules are unchanged. See [Done diagnostic guide](daily-login-1.0.4/DONE-DEBUG.md). The remote Manager symptom is not yet diagnosed or live-verified.
 
 Version 1.0.3 fixes early AutoExecute startup: it waits for the game identity, LocalPlayer and PlayerGui before checking/binding the game, then waits for native daily data and callback readiness. It starts as soon as ready, without a fixed delay. Game/player readiness and native readiness each have a 120-second budget; genuine wrong games and timeouts still fail safely. No need to run the loader a second time when initialization completes within those budgets. See `daily-login-1.0.3/STARTUP-AUDIT.md` for the regression evidence; this fix has not yet been live-verified on the remote executor.
 
@@ -47,11 +49,11 @@ _G.DiceDailyLogin.Stop()
 
 ## Source and tests
 
-`daily-login-1.0.3/` contains current source (`daily.lua`, `masterp.lua`, `runtime.lua`), `report.html`, build script, bundle and tests. Earlier version directories are retained as historical source snapshots; use `main.lua` for the latest release.
+`daily-login-1.0.4/` contains current source (`daily.lua`, `masterp.lua`, `runtime.lua`), `report.html`, build script, bundle and tests. Earlier version directories are retained as historical source snapshots; use `main.lua` for the latest release.
 
 No account captures, personal runtime reports, credentials, local shortcut files, or third-party SDK copies are published.
 
-With Node.js and Luau installed, from `daily-login-1.0.3/`:
+With Node.js and Luau installed, from `daily-login-1.0.4/`:
 
 ```sh
 luau tests/daily.spec.luau
@@ -59,7 +61,7 @@ luau tests/masterp.spec.luau
 node --test tests/*.spec.mjs
 luau-analyze daily.lua masterp.lua
 node build.mjs
-luau-compile dice_daily_login_1_0_3.lua > /dev/null
+luau-compile dice_daily_login_1_0_4.lua > /dev/null
 ```
 
 Tests use fixtures/mocks, not live game actions or a real Manager callback. Rebuilding produces the versioned bundle; copy it to root `main.lua` when intentionally publishing a new release.

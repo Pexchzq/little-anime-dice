@@ -1,6 +1,6 @@
--- GENERATED Anime Dice Daily Login 1.0.3
+-- GENERATED Anime Dice Daily Login 1.0.4
 local Daily=assert(loadstring([=[-- Pure schedule and bounded claim owner; all external IO is injected.
-local Daily={Version='1.0.3',GameId=10708913337}
+local Daily={Version='1.0.4',GameId=10708913337}
 local function finite(n)return type(n)=='number'and n==n and math.abs(n)<math.huge end
 local function integer(n)return finite(n)and n>=0 and n%1==0 end
 local function copy(t)local o={};for k,v in pairs(t)do o[k]=type(v)=='table'and copy(v)or v end;return o end
@@ -94,39 +94,57 @@ local function int(n)return type(n)=='number'and n==n and n>=0 and n<math.huge a
 local phases={pending=true,dispatching=true,called=true,unknown=true,cancelled=true}
 function Masterp.Create(deps,previous)
     local journal=previous and copy(previous)or nil;local stopped=false;local busy=false;local invalid=false
+    local gate='not_checked'
+    local function emit(event,fields)
+        if type(deps.log)=='function'then pcall(deps.log,event,fields or{})end
+    end
+    local function blocked(reason)
+        gate=reason;emit('done_gate',{reason=reason,journal=journal and journal.phase or'none'})
+    end
     if journal and(type(journal)~='table'or type(journal.key)~='string'or not phases[journal.phase]
         or not int(journal.claimed)or not int(journal.lastClaim))then
         invalid=true;journal={phase='invalid',reason='masterp_journal_invalid'}
     end
     local api={}
     function api.Status()return copy(journal)end
+    function api.Diagnostics()return{gate=gate,journal=journal and journal.phase or'none'}end
     function api.Stop()stopped=true end
     function api.Tick(s)
-        if stopped or busy or invalid then return api.Status()end
+        if stopped or busy or invalid then blocked(stopped and'stopped'or busy and'busy'or'invalid_journal');return api.Status()end
         busy=true
         local ok=pcall(function()
             local r=type(s)=='table'and s.claimReceipt
-            if type(r)~='table'or s.pending~=nil or s.phase=='ready'or s.gameId~=10708913337 or not int(s.userId)or s.userId<1
+            if type(s)~='table'then blocked('invalid_snapshot');return end
+            if s.pending~=nil then blocked('claim_pending');return end
+            if s.phase=='ready'then blocked('new_claim_due');return end
+            if type(r)~='table'then blocked('no_verified_receipt');return end
+            if s.gameId~=10708913337 or not int(s.userId)or s.userId<1
                 or not int(r.claimed)or r.claimed<1 or r.claimed>7 or not int(r.lastClaim)or r.lastClaim<1
-                or r.claimed~=s.claimed or r.lastClaim~=s.lastClaim then return end
+                or r.claimed~=s.claimed or r.lastClaim~=s.lastClaim then blocked('invalid_or_mismatched_receipt');return end
             local key=table.concat({s.gameId,s.userId,r.claimed,r.lastClaim},':')
-            if journal and journal.key==key and journal.phase~='pending'then return end
+            if journal and journal.key==key and journal.phase~='pending'then
+                blocked(journal.phase=='called'and'already_reported'or'previous_outcome_uncertain_or_cancelled');return
+            end
             if not journal or journal.key~=key then
-                if journal and r.claimed<=journal.claimed and r.lastClaim<=journal.lastClaim then return end
+                if journal and r.claimed<=journal.claimed and r.lastClaim<=journal.lastClaim then blocked('stale_receipt');return end
                 journal={key=key,claimed=r.claimed,lastClaim=r.lastClaim,phase='pending'}
             end
             local hook=deps.hook()
             if type(hook)~='function'then
+                blocked('masterp_client_missing')
                 journal.reason='masterp_client_missing';deps.save(copy(journal),s);return
             end
             journal.phase='dispatching';journal.reason=nil
             local saved=deps.save(copy(journal),s,true)
-            if saved~=true then journal.phase='pending';journal.reason='masterp_save_failed';return end
-            if stopped then journal.phase='cancelled';deps.save(copy(journal),s,true);return end
+            if saved~=true then journal.phase='pending';journal.reason='masterp_save_failed';blocked('masterp_save_failed');return end
+            if stopped then journal.phase='cancelled';deps.save(copy(journal),s,true);blocked('stopped');return end
             -- No arguments, exactly as documented in loader/README.md.
-            local called=pcall(hook)
+            gate='calling';emit('done_call_begin',{args=0,dispatch_saved=true})
+            local called,callError=pcall(hook)
             journal.phase=called and'called'or'unknown'
             journal.reason=not called and'masterp_callback_outcome_unknown'or nil
+            gate=called and'callback_returned_not_manager_ack'or'callback_threw_outcome_unknown'
+            emit('done_call_result',{reason=gate,error_type=called and'none'or type(callError)})
             deps.save(copy(journal),s,true)
         end)
         busy=false
@@ -134,6 +152,7 @@ function Masterp.Create(deps,previous)
             if journal.phase=='dispatching'then journal.phase='unknown'end
             journal.reason='masterp_adapter_error'
         end
+        if not ok then blocked('masterp_adapter_error')end
         return api.Status()
     end
     return api
@@ -141,11 +160,33 @@ end
 return Masterp
 ]=],'@dice-daily/masterp'))()
 return assert(loadstring([=[local Daily,template,Masterp=...
+-- Deliberately scalar-only diagnostics: never dump SDK globals, journals or account paths.
+local debugLines={}
+local function trace(event,fields,force)
+    pcall(function()
+        local keys={};for k in pairs(fields or{})do keys[#keys+1]=k end;table.sort(keys)
+        local parts={};for _,k in ipairs(keys)do parts[#parts+1]=k..'='..tostring(fields[k])end
+        local line=table.concat(parts,' ')
+        if force or debugLines[event]~=line then
+            debugLines[event]=line;print('[DICE-DEBUG-104] '..event..' '..line)
+        end
+    end)
+end
+local function sdkTypes()
+    local globalType=type(rawget(_G,'Masterp_Done'));local envType='unavailable'
+    if type(getgenv)=='function'then
+        local ok,env=pcall(getgenv)
+        if ok and type(env)=='table'then envType=type(rawget(env,'Masterp_Done'))end
+    end
+    return globalType,envType
+end
+trace('boot',{version=Daily.Version,stage='waiting_game_identity'})
 local P=game:GetService('Players');local H=game:GetService('HttpService')
 local untilAt=os.clock()+120
 while(not game:IsLoaded()or type(game.GameId)~='number'or game.GameId<=0)and os.clock()<untilAt do task.wait(.25)end
 assert(game:IsLoaded()and type(game.GameId)=='number'and game.GameId>0,'Anime Dice startup timed out: game identity not ready')
 assert(game.GameId==Daily.GameId,'This script is for Anime Dice only')
+trace('boot',{version=Daily.Version,stage='waiting_player_gui'})
 assert(type(writefile)=='function'and type(readfile)=='function'and type(isfile)=='function','Executor file access required')
 assert(type(getloadedmodules)=='function'and type(getconnections)=='function'and type(debug.info)=='function'
     and type(debug.getupvalues)=='function','Executor native callback inspection required')
@@ -153,6 +194,7 @@ while(not P.LocalPlayer or type(P.LocalPlayer.UserId)~='number'or P.LocalPlayer.
     or not P.LocalPlayer:FindFirstChild('PlayerGui'))and os.clock()<untilAt do task.wait(.25)end
 local player=assert(P.LocalPlayer,'Player not ready');local gui=assert(player:FindFirstChild('PlayerGui'),'PlayerGui not ready')
 assert(type(player.UserId)=='number'and player.UserId>0,'Anime Dice startup timed out: player identity not ready')
+trace('boot',{version=Daily.Version,stage='waiting_native_daily'})
 local data,config,callback
 local function findNative()
     data=nil;config=nil;callback=nil
@@ -188,6 +230,7 @@ repeat
     if not nativeReady and os.clock()<untilAt then task.wait(.5)end
 until nativeReady or os.clock()>=untilAt
 assert(nativeReady,'Anime Dice startup timed out: daily reward data/button not ready')
+trace('boot',{version=Daily.Version,stage='native_ready'})
 assert(game.GameId==Daily.GameId,'This script is for Anime Dice only')
 local old=rawget(_G,'DiceDailyLogin')
 if old then assert(old.Owned==true and type(old.Stop)=='function','Existing daily script owner conflict');old.Stop()end
@@ -202,6 +245,8 @@ if isfile(statePath)then
     assert(ok and type(s)=='table'and s.schemaVersion==1 and s.gameId==Daily.GameId and s.userId==player.UserId,'Saved daily state invalid; preserve it and inspect before retrying')
     existing=s
 end
+trace('journal_loaded',{state=existing and'present'or'none',receipt=existing and type(existing.claimReceipt)=='table'or false,
+    completion=existing and existing.masterpCompletion and existing.masterpCompletion.phase or'none'})
 local alive=true;local lastWrite=-math.huge;local signature;local owner;local screen;local manager
 local function save(s,force)
     local pending=s.pending
@@ -209,23 +254,32 @@ local function save(s,force)
     local sig=table.concat({s.claimed,s.lastClaim,s.cooldown,s.phase,s.reason or'',tostring(s.enabled),pending and pending.attempts or 0,
         completion and completion.key or'',completion and completion.phase or'',completion and completion.reason or''},':')
     if not force and sig==signature and os.clock()-lastWrite<60 then return true end
+    local saveStep='encode_state'
     local ok,why=pcall(function()
         s.nextLoginText=Daily.NextText(s)
         s.masterpCompletion=completion
         local raw=H:JSONEncode(s)
+        saveStep='backup_readback'
         if isfile(statePath)then local previous=readfile(statePath);writefile(statePath..'.backup',previous);assert(readfile(statePath..'.backup')==previous,'backup_readback_failed')end
+        saveStep='state_write_readback'
         writefile(statePath,raw);assert(readfile(statePath)==raw,'state_readback_failed')
         local safe=raw:gsub('<','\\u003c');local html=template:gsub('__STATE_JSON__',function()return safe end)
+        saveStep='account_html_write_readback'
         writefile(reportPath,html);assert(readfile(reportPath)==html,'report_readback_failed')
+        saveStep='latest_html_write_readback'
         writefile(latestReport,html);assert(readfile(latestReport)==html,'latest_report_readback_failed')
         local text='Anime Dice · รับรางวัล 7 วัน\n'..s.nextLoginText..'\n\nบันทึกจากสถานะที่เกมยืนยันล่าสุด ไม่ใช่การรับรางวัลขณะออฟไลน์\n'
+        saveStep='account_text_write_readback'
         writefile(textPath,text);assert(readfile(textPath)==text,'text_readback_failed')
+        saveStep='latest_text_write_readback'
         writefile('dice_daily_next_login.txt',text);assert(readfile('dice_daily_next_login.txt')==text,'latest_text_readback_failed')
     end)
     if ok then signature=sig;lastWrite=os.clock()end
+    trace('files_result',{ok=ok,stage=ok and'all_reports_read_back'or saveStep,error_type=ok and'none'or type(why)})
     return ok,not ok and('save_failed: '..tostring(why))or nil
 end
 manager=Masterp.Create({hook=function()return rawget(_G,'Masterp_Done')end,
+    log=function(event,fields)trace(event,fields,event=='done_call_begin'or event=='done_call_result')end,
     save=function(_,snapshot,force)return save(snapshot,force)end},existing and existing.masterpCompletion)
 owner=Daily.Create({read=function()
     assert(game.GameId==Daily.GameId,'wrong_game')
@@ -233,15 +287,38 @@ owner=Daily.Create({read=function()
     return{gameId=game.GameId,userId=player.UserId,claimed=cache.DailyRewardsClaimed,lastClaim=cache.LastDailyRewardClaim,
         total=#config.Rewards,cooldown=config.Cooldown,serverNow=workspace:GetServerTimeNow(),localNow=os.time()}
 end,save=save,claim=function()
-    assert(alive,'stopped');callback() -- Existing zero-argument UI callback, not a guessed wire call.
+    assert(alive,'stopped');trace('claim_call_begin',{args=0},true)
+    callback() -- Existing zero-argument UI callback, not a guessed wire call.
+    trace('claim_call_returned',{note='await_native_count_and_timestamp'},true)
 end},{enabled=true,pending=existing and existing.pending,claimReceipt=existing and existing.claimReceipt})
-screen=Instance.new('ScreenGui');screen.Name='DiceDailyLogin_103';screen.ResetOnSpawn=false;screen.Parent=gui
+screen=Instance.new('ScreenGui');screen.Name='DiceDailyLogin_104';screen.ResetOnSpawn=false;screen.Parent=gui
 local box=Instance.new('Frame');box.Size=UDim2.fromOffset(360,215);box.Position=UDim2.new(1,-375,0,65);box.BackgroundColor3=Color3.fromRGB(238,245,247);box.Parent=screen
 local round=Instance.new('UICorner');round.CornerRadius=UDim.new(0,12);round.Parent=box
 local label=Instance.new('TextLabel');label.Size=UDim2.new(1,-24,0,165);label.Position=UDim2.fromOffset(12,6);label.BackgroundTransparency=1;label.TextWrapped=true;label.TextSize=14;label.Font=Enum.Font.Arial;label.TextColor3=Color3.fromRGB(21,52,70);label.Parent=box
 local auto=Instance.new('TextButton');auto.Size=UDim2.fromOffset(185,30);auto.Position=UDim2.fromOffset(12,175);auto.TextSize=13;auto.Parent=box
 local close=Instance.new('TextButton');close.Size=UDim2.fromOffset(112,30);close.Position=UDim2.fromOffset(231,175);close.Text='หยุด / ปิด';close.TextSize=13;close.Parent=box
 local connections={};local api={Owned=true,Version=Daily.Version,StatePath=statePath,ReportPath=reportPath}
+local lastDebugAt=-math.huge;local lastDebugSignature
+local function reportDiagnostics(s,force)
+    local ok,result=pcall(function()
+    local g,e=sdkTypes();local m=manager.Diagnostics();local p=s.pending
+    local cache=type(data.___X)=='table'and data.___X or{}
+    local d={version=Daily.Version,phase=s.phase or'none',reason=type(s.reason)=='string'and(s.reason:match('^[%w_]+')or'unknown')or'none',
+        day=s.claimed or'unknown',receipt=type(s.claimReceipt)=='table',attempts=p and p.attempts or 0,
+        gate=m.gate,journal=m.journal,hook_G=g,hook_getgenv=e,
+        ack_day=p and type(cache.DailyRewardsClaimed)=='number'and cache.DailyRewardsClaimed>p.claimed or false,
+        ack_time=p and type(cache.LastDailyRewardClaim)=='number'and cache.LastDailyRewardClaim>p.lastClaim or false,
+        next_in_seconds=type(s.nextAt)=='number'and math.max(0,math.ceil(s.nextAt-workspace:GetServerTimeNow()))or'none'}
+    local sig=table.concat({d.phase,d.reason,tostring(d.day),tostring(d.receipt),d.attempts,d.gate,d.journal,g,e,
+        tostring(d.ack_day),tostring(d.ack_time)},':')
+    if force or sig~=lastDebugSignature or os.clock()-lastDebugAt>=15 then
+        lastDebugAt=os.clock();lastDebugSignature=sig;trace('summary',d,true)
+    end
+    return d
+    end)
+    if not ok then trace('diagnostic_error',{error_type=type(result)},true);return{gate='diagnostic_error'}end
+    return result
+end
 local announced
 local function display(s)
     local left=s.nextAt and math.max(0,math.ceil(s.nextAt-workspace:GetServerTimeNow()))or 0
@@ -255,21 +332,22 @@ local function display(s)
     end
 end
 api.Status=function()local s=owner.Status();s.masterpCompletion=manager.Status();return s end
+api.Debug=function()return reportDiagnostics(owner.Status(),true)end -- Read-only: no Tick/save/claim/Done.
 api.Stop=function()
     if not alive then return true end;alive=false;owner.Stop();manager.Stop()
+    trace('stopped',{version=Daily.Version},true)
     for _,c in ipairs(connections)do c:Disconnect()end
     if screen then screen:Destroy()end
     return true
 end
-connections[#connections+1]=auto.Activated:Connect(function()local s=owner.SetEnabled(not owner.Status().enabled);display(s);if alive then manager.Tick(s)end end)
+connections[#connections+1]=auto.Activated:Connect(function()local s=owner.SetEnabled(not owner.Status().enabled);display(s);if alive then manager.Tick(s);reportDiagnostics(s)end end)
 connections[#connections+1]=close.Activated:Connect(api.Stop)
 _G.DiceDailyLogin=api
 local s=owner.Tick();display(s)
-print('[DICE-DAILY-102] '..H:JSONEncode({phase=s.phase,claimed=s.claimed,nextAt=s.nextAt,report=reportPath}))
 print('[DICE-DAILY] '..Daily.NextText(s))
-if alive then manager.Tick(s)end
+if alive then manager.Tick(s);reportDiagnostics(s)end
 task.spawn(function()
-    while alive do task.wait(2);if alive then local current=owner.Tick();display(current);if alive then manager.Tick(current)end end end
+    while alive do task.wait(2);if alive then local current=owner.Tick();display(current);if alive then manager.Tick(current);reportDiagnostics(current)end end end
 end)
 return api
 ]=],'@dice-daily/runtime'))(Daily,[=[<!doctype html>
