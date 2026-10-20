@@ -1,0 +1,313 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import {execFileSync} from 'node:child_process';
+const root=new URL('../',import.meta.url);const runtime=fs.readFileSync(new URL('runtime.lua',root),'utf8');const model=fs.readFileSync(new URL('daily.lua',root),'utf8');const html=fs.readFileSync(new URL('report.html',root),'utf8');
+const integration=fs.readFileSync(new URL('masterp.lua',root),'utf8');
+const q=s=>JSON.stringify(s);
+function run(body){const dir=fs.mkdtempSync(path.join(os.tmpdir(),'dice-daily-test-'));const file=path.join(dir,'test.luau');fs.writeFileSync(file,`
+local now=100000;local files,docs={},{};local jsonId=0;local claims=0;local diskOK=true;local spawned;local labels={}
+local descriptions={};local guidCounter=0
+local workers={}
+local logs={};local realPrint=print
+print=function(...)local out={};for i=1,select('#',...)do out[i]=tostring(select(i,...))end;logs[#logs+1]=table.concat(out,' ');realPrint(...)end
+local function logged(needle)for _,line in ipairs(logs)do if line:find(needle,1,true)then return true end end;return false end
+local cache={DailyRewardsClaimed=1,LastDailyRewardClaim=99000}
+local config={Cooldown=82800,Rewards={1,2,3,4,5,6,7}}
+local callback=function(...)assert(select('#',...)==0);assert(files['dice_daily_7_state.json'],'intent must be saved');claims+=1 end
+local function signal()local s={};function s:Connect(fn)local c={};function c:Disconnect()end;return c end;return s end
+local function object(name,children)local o={Name=name,children=children or{},Activated=signal()};function o:FindFirstChild(k)return self.children[k]end;function o:Destroy()end;return o end
+local day=object('Day1');local days=object('Day1-6',{Day1=day});local dailyMenu=object('DailyRewards',{['Day1-6']=days})
+local menus=object('Menus',{DailyRewards=dailyMenu});local gui=object('PlayerGui',{Root=object('Root',{Menus=menus})})
+local player={UserId=7};function player:FindFirstChild(k)if k=='PlayerGui'then return gui end end
+local http={JSONEncode=function(_,v)jsonId+=1;local raw='json:'..jsonId;docs[raw]=v;return raw end,JSONDecode=function(_,raw)return assert(docs[raw])end}
+http.GenerateGUID=function()guidCounter+=1;return'fixture-session-'..guidCounter end
+game={GameId=10708913337,IsLoaded=function()return true end,GetService=function(_,k)if k=='Players'then return{LocalPlayer=player}else return http end end}
+workspace={GetServerTimeNow=function()return now end}
+Instance={new=function(name)local o=object(name);if name=='TextLabel'then labels[#labels+1]=o end;return o end};Color3={fromRGB=function()return{}end};UDim2={fromOffset=function()return{}end,new=function()return{}end};UDim={new=function()return{}end};Enum={Font={Arial=1}}
+task={wait=function()coroutine.yield()end,spawn=function(fn)spawned=coroutine.create(fn);workers[#workers+1]=spawned end}
+local oldTypeof=typeof;typeof=function(v)if type(v)=='table'and v.nativeInstance then return'Instance'end;return oldTypeof(v)end
+local nativeRemote={nativeInstance=true,GetFullName=function()return'ReplicatedStorage.Network.DailyRewardService.RE.Claim'end}
+local oldDebug=debug;debug=setmetatable({info=function(f,kind)assert(f==callback);if kind=='s'then return'ReplicatedStorage.Framework.Features.Rewards.DailyRewardController'else return 0,false end end,getupvalues=function()return{{_re=nativeRemote}}end},{__index=oldDebug})
+getconnections=function()return{{Function=callback}}end
+local exports={['ReplicatedStorage.Framework.Features.Data.DataController']={___X=cache},['ReplicatedStorage.Framework.Features.Rewards.DailyRewardConfig']=config}
+local mods={};for name,v in pairs(exports)do mods[#mods+1]={GetFullName=function()return name end,value=v}end
+getloadedmodules=function()return mods end;require=function(m)return m.value end
+writefile=function(p,raw)if not diskOK then error('disk full')end;files[p]=raw end;readfile=function(p)return assert(files[p])end;isfile=function(p)return files[p]~=nil end
+_G={}
+_G.Masterp_Description=function(...)assert(select('#',...)==1);descriptions[#descriptions+1]=(...)end
+local Daily=assert(loadstring(${q(model)}))();local fn=assert(loadstring(${q(runtime)}));setfenv(fn,getfenv())
+local Masterp=assert(loadstring(${q(integration)}))()
+local function launch()return fn(Daily,${q(html)},Masterp)end
+${body}
+print('RUNTIME PASS')
+`);try{assert.match(execFileSync('luau',[file],{encoding:'utf8',timeout:10000}),/RUNTIME PASS/);}finally{fs.rmSync(dir,{recursive:true,force:true});}}
+test('actual runtime exports a waiting schedule without claiming, and singleton reload stops old owner',()=>run(`local a=launch();assert(claims==0 and a.Status().nextAt==181800);assert(files['dice_daily_next_login.html']);local b=launch();assert(a~=b and claims==0);b.Stop()`));
+test('actual runtime eligible callback fires once and remains unconfirmed until native data changes',()=>run(`cache.LastDailyRewardClaim=1000;local a=launch();assert(claims==1 and a.Status().claimed==1);local b=launch();assert(claims==1,'durable pending survives reload');b.Stop()`));
+test('actual runtime never claims without a read-back schedule or in the wrong game',()=>run(`cache.LastDailyRewardClaim=1000;diskOK=false;local a=launch();assert(claims==0 and a.Status().reason:find('save_failed'));a.Stop();game.GameId=5578556129;assert(not pcall(launch));assert(claims==0)`));
+test('after native claim acknowledgement panel and persistent text announce the new weekday/date/time',()=>run(`
+now=1792453527;cache.LastDailyRewardClaim=1792370727;cache.DailyRewardsClaimed=1
+local a=launch();assert(claims==1)
+assert(coroutine.resume(spawned))
+cache.DailyRewardsClaimed=2;cache.LastDailyRewardClaim=1792453527
+assert(coroutine.resume(spawned))
+assert(a.Status().reason=='claim_verified'and a.Status().nextAt==1792536327)
+assert(labels[#labels].Text:find('วันที่ 3',1,true))
+assert(labels[#labels].Text:find('วันพุธที่ 21 ตุลาคม 2569 เวลา 05:45:27',1,true))
+assert(files['dice_daily_next_login.txt']:find('วันพุธที่ 21 ตุลาคม 2569 เวลา 05:45:27',1,true))
+a.Stop()
+`));
+test('actual runtime calls Masterp_Done once only after receipt and next appointment are durably saved',()=>run(`
+now=1792453527;cache.LastDailyRewardClaim=1792370727;cache.DailyRewardsClaimed=1
+local done=0
+_G.Masterp_Done=function(...)
+ assert(select('#',...)==0)
+ assert(files['dice_daily_next_login.txt']:find('วันพุธที่ 21 ตุลาคม 2569 เวลา 05:45:27',1,true))
+ assert(docs[files['dice_daily_7_state.json']].masterpCompletion.phase=='dispatching')
+ done+=1
+end
+local a=launch();assert(claims==1 and done==0,'request sent is not reward success')
+assert(coroutine.resume(spawned));cache.DailyRewardsClaimed=2
+assert(coroutine.resume(spawned));assert(done==0,'partial native replication is not reward success')
+cache.LastDailyRewardClaim=1792453527
+assert(coroutine.resume(spawned));assert(done==1 and a.Status().masterpCompletion.phase=='called')
+local b=launch();assert(done==1,'reloading after Done does not report twice');b.Stop()
+`));
+test('real controller keeps confirmed receipt after disk failure and waits for SDK without claiming again',()=>run(`
+now=1792453527;cache.LastDailyRewardClaim=1792370727;cache.DailyRewardsClaimed=1
+local a=launch();assert(coroutine.resume(spawned));cache.DailyRewardsClaimed=2;cache.LastDailyRewardClaim=1792453527
+diskOK=false;assert(coroutine.resume(spawned));local done=0
+_G.Masterp_Done=function()done+=1 end
+assert(coroutine.resume(spawned));assert(done==0)
+diskOK=true;assert(coroutine.resume(spawned));assert(done==1 and claims==1)
+assert(coroutine.resume(spawned));assert(done==1);a.Stop()
+`));
+test('AutoExecute waits for GameId initialization rather than rejecting Anime Dice at startup',()=>run(`
+game.GameId=0;game.IsLoaded=function()return false end
+local boot=coroutine.create(launch)
+local ok,why=coroutine.resume(boot);assert(ok,why)
+assert(coroutine.status(boot)=='suspended'and claims==0 and next(files)==nil)
+game.IsLoaded=function()return true end
+ok,why=coroutine.resume(boot);assert(ok,why)
+assert(coroutine.status(boot)=='suspended'and claims==0,'loaded may precede GameId')
+game.GameId=10708913337
+ok,why=coroutine.resume(boot);assert(ok,why)
+assert(coroutine.status(boot)=='dead'and _G.DiceDailyLogin.Status().phase=='waiting')
+_G.DiceDailyLogin.Stop()
+`));
+test('AutoExecute waits through delayed LocalPlayer and PlayerGui without early IO or claims',()=>run(`
+local players={};local service=game.GetService;local guiReady=false
+game.GetService=function(self,k)if k=='Players'then return players end;return service(self,k)end
+player.FindFirstChild=function(_,k)if k=='PlayerGui'and guiReady then return gui end end
+local boot=coroutine.create(launch);local ok,why=coroutine.resume(boot);assert(ok,why)
+assert(coroutine.status(boot)=='suspended'and next(files)==nil)
+players.LocalPlayer=player
+ok,why=coroutine.resume(boot);assert(ok,why);assert(coroutine.status(boot)=='suspended')
+guiReady=true;ok,why=coroutine.resume(boot);assert(ok,why)
+assert(coroutine.status(boot)=='dead'and claims==0);_G.DiceDailyLogin.Stop()
+`));
+test('AutoExecute reserves a fresh native-data budget after slow game loading and retries transient callback inspection',()=>run(`
+local clock=0;os=setmetatable({clock=function()return clock end},{__index=os})
+game.IsLoaded=function()return false end
+local inspect=getconnections;getconnections=function()error('button connection not ready')end
+cache.LastDailyRewardClaim=1000
+local boot=coroutine.create(launch);local ok,why=coroutine.resume(boot);assert(ok,why)
+clock=110;game.IsLoaded=function()return true end
+ok,why=coroutine.resume(boot);assert(ok,why);assert(coroutine.status(boot)=='suspended')
+clock=180;ok,why=coroutine.resume(boot);assert(ok,why)
+assert(claims==0 and next(files)==nil,'not ready must not claim or persist fabricated state')
+clock=220;getconnections=inspect
+ok,why=coroutine.resume(boot);assert(ok,why)
+assert(coroutine.status(boot)=='dead'and claims==1);_G.DiceDailyLogin.Stop()
+`));
+test('AutoExecute waits for replicated numeric daily fields instead of creating an unknown owner too early',()=>run(`
+cache.LastDailyRewardClaim=nil
+local boot=coroutine.create(launch);local ok,why=coroutine.resume(boot);assert(ok,why)
+assert(coroutine.status(boot)=='suspended'and _G.DiceDailyLogin==nil and next(files)==nil)
+cache.LastDailyRewardClaim=1000
+ok,why=coroutine.resume(boot);assert(ok,why)
+assert(coroutine.status(boot)=='dead'and claims==1);_G.DiceDailyLogin.Stop()
+`));
+test('late wrong-game identity is rejected before any claim, report, Done, or existing-owner stop',()=>run(`
+local stopped,done=0,0
+_G.DiceDailyLogin={Owned=true,Stop=function()stopped+=1 end}
+_G.Masterp_Done=function()done+=1 end
+game.GameId=0
+local boot=coroutine.create(launch);assert(coroutine.resume(boot))
+game.GameId=5578556129
+local ok,why=coroutine.resume(boot);assert(not ok and tostring(why):find('Anime Dice only',1,true))
+assert(claims==0 and done==0 and stopped==0 and next(files)==nil)
+`));
+test('uninitialized GameId times out safely without a busy loop or side effects',()=>run(`
+local clock=0;os=setmetatable({clock=function()return clock end},{__index=os})
+game.GameId=0
+local boot=coroutine.create(launch);assert(coroutine.resume(boot));clock=121
+local ok,why=coroutine.resume(boot)
+assert(not ok and tostring(why):find('game identity not ready',1,true))
+assert(claims==0 and next(files)==nil and _G.DiceDailyLogin==nil)
+`));
+test('native-data timeout leaves an existing owner and completion untouched',()=>run(`
+local clock=0;os=setmetatable({clock=function()return clock end},{__index=os})
+local stopped,done=0,0
+_G.DiceDailyLogin={Owned=true,Stop=function()stopped+=1 end};_G.Masterp_Done=function()done+=1 end
+getloadedmodules=function()return{}end
+local boot=coroutine.create(launch);assert(coroutine.resume(boot));clock=121
+local ok,why=coroutine.resume(boot)
+assert(not ok and tostring(why):find('daily reward data/button not ready',1,true))
+assert(claims==0 and done==0 and stopped==0 and next(files)==nil)
+`));
+test('diagnostics explain missing Done hook on a completed native cooldown without exposing account identifiers',()=>run(`
+local a=launch()
+assert(logged('[DICE-DEBUG-105]'),'versioned diagnostic prefix missing')
+assert(logged('masterp_client_missing'),'silent Done gate must be explained')
+assert(type(a.Debug)=='function','read-only diagnostic command required')
+local before=claims;local writes=jsonId;local status=a.Debug()
+assert(claims==before and jsonId==writes and status.gate=='masterp_client_missing')
+for _,line in ipairs(logs)do if line:find('[DICE-DEBUG-105]',1,true)then
+ assert(not line:find('userId',1,true)and not line:find('dice_daily_7',1,true))
+end end
+a.Stop()
+`));
+test('diagnostics show absent SDK then durable zero-argument Done dispatch',()=>run(`
+getgenv=function()return{}end
+cache.LastDailyRewardClaim=1000;local a=launch();assert(logged('claim_pending'))
+assert(coroutine.resume(spawned));cache.DailyRewardsClaimed=2;cache.LastDailyRewardClaim=now
+assert(coroutine.resume(spawned));assert(logged('masterp_client_missing'))
+assert(logged('hook_G=nil')and logged('hook_getgenv=nil'))
+local done=0;_G.Masterp_Done=function(...)
+ assert(select('#',...)==0 and logged('done_call_begin'))
+ assert(docs[files['dice_daily_7_state.json']].masterpCompletion.phase=='dispatching');done+=1
+end
+assert(coroutine.resume(spawned))
+assert(done==1 and logged('callback_returned_not_manager_ack'))
+local b=launch();assert(done==1 and logged('already_reported'));b.Stop()
+`));
+test('diagnostics identify file readback stage and never dispatch Done when persistence fails',()=>run(`
+cache.LastDailyRewardClaim=1000;local a=launch();assert(coroutine.resume(spawned))
+cache.DailyRewardsClaimed=2;cache.LastDailyRewardClaim=now
+local done=0;_G.Masterp_Done=function()done+=1 end;diskOK=false
+assert(coroutine.resume(spawned));assert(done==0)
+assert(logged('files_result')and logged('stage=backup_readback')and logged('masterp_save_failed'))
+assert(not logged('done_call_begin'));a.Stop()
+`));
+test('diagnostics report thrown callback without leaking its message or retrying an uncertain dispatch',()=>run(`
+cache.LastDailyRewardClaim=1000;local a=launch();assert(coroutine.resume(spawned))
+local done=0;_G.Masterp_Done=function()done+=1;error('PRIVATE_CALLBACK_SECRET')end
+cache.DailyRewardsClaimed=2;cache.LastDailyRewardClaim=now
+assert(coroutine.resume(spawned));assert(done==1 and logged('callback_threw_outcome_unknown'))
+assert(coroutine.resume(spawned));assert(done==1 and logged('previous_outcome_uncertain_or_cancelled'))
+assert(not logged('PRIVATE_CALLBACK_SECRET'));a.Stop()
+`));
+test('diagnostic print failure cannot suppress a confirmed claim or change Masterp dispatch',()=>run(`
+print=function(...)
+ if tostring((...)):find('[DICE-DEBUG-105]',1,true)then error('diagnostic console unavailable')end
+ realPrint(...)
+end
+cache.LastDailyRewardClaim=1000
+local a=launch();assert(claims==1)
+local done=0;_G.Masterp_Done=function()done+=1 end
+assert(coroutine.resume(spawned));cache.DailyRewardsClaimed=2;cache.LastDailyRewardClaim=now
+assert(coroutine.resume(spawned));assert(done==1);a.Stop();print=realPrint
+`));
+test('already-claimed native cooldown sends Description with next calendar time before Done even without a script receipt',()=>run(`
+now=1792493236;cache.LastDailyRewardClaim=1792490000
+local done=0;_G.Masterp_Done=function(...)
+ assert(select('#',...)==0 and #descriptions==1,'Description must precede Done')
+ assert(descriptions[1]:find('วันนี้: รับแล้ว',1,true))
+ assert(descriptions[1]:find('รับครั้งถัดไป',1,true))
+ assert(descriptions[1]:find('21 ตุลาคม 2569',1,true))
+ done+=1
+end
+local a=launch();assert(done==1 and claims==0,'already claimed accounts must complete without re-claim')
+local b=launch();assert(done==1,'same live Manager session must not send Done twice');b.Stop()
+`));
+test('a fresh Roblox session re-reports a completed account despite a prior session called journal',()=>run(`
+local done=0;_G.Masterp_Done=function()done+=1 end
+local a=launch();assert(done==1 and claims==0);a.Stop()
+_G.DiceDailyMasterpSession=nil
+local b=launch();assert(done==2 and claims==0);b.Stop()
+`));
+test('Description missing or failing blocks Done, then sends description first when the bridge recovers',()=>run(`
+local done=0;_G.Masterp_Done=function()done+=1 end
+_G.Masterp_Description=nil
+local a=launch();assert(done==0 and logged('masterp_description_missing'))
+_G.Masterp_Description=function()error('PRIVATE_DESCRIPTION_ERROR')end
+assert(coroutine.resume(spawned));assert(coroutine.resume(spawned))
+assert(done==0 and logged('description_callback_error')and not logged('PRIVATE_DESCRIPTION_ERROR'))
+_G.Masterp_Description=function(message)descriptions[#descriptions+1]=message end
+assert(coroutine.resume(spawned));assert(done==1 and #descriptions==1);a.Stop()
+`));
+test('getgenv-only documented hooks work without replacing globals or loading a second client',()=>run(`
+_G.Masterp_Description=nil;local done=0;local env={
+ Masterp_Description=function(message)descriptions[#descriptions+1]=message end,
+ Masterp_Done=function()assert(#descriptions==1);done+=1 end}
+getgenv=function()return env end
+local a=launch();assert(done==1 and claims==0 and _G.Masterp_Done==nil)
+assert(_G.DiceDailyMasterpBootstrap==nil);a.Stop()
+`));
+test('observing day seven completion publishes the final Description and Done without inventing day eight',()=>run(`
+cache.DailyRewardsClaimed=7;local done=0
+_G.Masterp_Done=function()assert(descriptions[#descriptions]:find('ไม่มีรอบถัดไป',1,true));done+=1 end
+local a=launch();assert(done==1 and claims==0)
+assert(not descriptions[#descriptions]:find('วันที่ 8',1,true));a.Stop()
+`));
+test('official client auto-bootstrap supplies missing hooks once and never marks Done before Description',()=>run(`
+_G.Masterp_Description=nil;local fetches=0
+game.HttpGet=function(_,url,cached)
+ assert(url=='https://cdn.masterpx.xyz/s/masterp-manager/client'and cached==true);fetches+=1
+ return "assert(_G.MasterpSettings.Performance==false and _G.MasterpSettings.UnlockFPS.Enable==false); _G.Masterp_Description=function(message) _G.fixtureDescription=message end; _G.Masterp_Done=function(...) assert(select('#',...)==0 and _G.fixtureDescription); _G.fixtureDone=(_G.fixtureDone or 0)+1 end"
+end
+local a=launch();assert(#workers==2 and fetches==0 and _G.fixtureDone==nil)
+assert(coroutine.resume(workers[1]));assert(fetches==1)
+assert(_G.DiceDailyMasterpBootstrap.phase=='client_hooks_ready')
+assert(coroutine.resume(spawned));assert(coroutine.resume(spawned))
+assert(_G.fixtureDone==1 and _G.fixtureDescription:find('รับครั้งถัดไป',1,true))
+local b=launch();assert(fetches==1 and _G.fixtureDone==1);b.Stop()
+`));
+test('HTML returned from the official CDN is not executed or retried and missing bridge does not fake Done',()=>run(`
+_G.Masterp_Description=nil;local fetches=0
+game.HttpGet=function()fetches+=1;return'<html>not a Lua client</html>'end
+local a=launch();assert(coroutine.resume(workers[1]))
+assert(fetches==1 and _G.DiceDailyMasterpBootstrap.phase=='client_response_is_html')
+assert(logged('client_response_is_html')and _G.Masterp_Done==nil)
+local b=launch();assert(fetches==1);b.Stop()
+`));
+test('client HTTP errors are isolated and reported without private exception details',()=>run(`
+_G.Masterp_Description=nil;game.HttpGet=function()error('PRIVATE_HTTP_CREDENTIAL')end
+local a=launch();assert(coroutine.resume(workers[1]))
+assert(_G.DiceDailyMasterpBootstrap.phase=='client_http_error')
+assert(not logged('PRIVATE_HTTP_CREDENTIAL')and _G.Masterp_Done==nil);a.Stop()
+`));
+test('Stop during a yielded official client download prevents executing the fetched code',()=>run(`
+_G.Masterp_Description=nil
+game.HttpGet=function()coroutine.yield();return'_G.fixtureClientExecuted=true'end
+local a=launch();assert(coroutine.resume(workers[1]))
+a.Stop();assert(coroutine.resume(workers[1]))
+assert(_G.fixtureClientExecuted==nil and _G.DiceDailyMasterpBootstrap.phase=='cancelled')
+`));
+test('invalid Lua client response is not executed and compile errors do not dump the response',()=>run(`
+_G.Masterp_Description=nil;game.HttpGet=function()return'not a valid lua chunk PRIVATE_RESPONSE'end
+local a=launch();assert(coroutine.resume(workers[1]))
+assert(_G.DiceDailyMasterpBootstrap.phase=='client_compile_error'and not logged('PRIVATE_RESPONSE'));a.Stop()
+`));
+test('Description distinguishes a previous calendar-day claim from a completed current cooldown',()=>run(`
+now=1792493236;cache.LastDailyRewardClaim=1792427000
+local done=0;_G.Masterp_Done=function()done+=1 end
+local a=launch();assert(done==1 and claims==0)
+assert(descriptions[1]:find('วันนี้: ยังไม่ได้รับ',1,true))
+assert(descriptions[1]:find('รอบปัจจุบัน: รับแล้ว',1,true))
+assert(descriptions[1]:find('รับล่าสุด:',1,true)and descriptions[1]:find('รับครั้งถัดไป',1,true));a.Stop()
+`));
+test('Description of an eligible/in-flight reward never announces it as already claimed',()=>run(`
+cache.LastDailyRewardClaim=1000
+local done=0;_G.Masterp_Done=function()done+=1 end
+local a=launch();assert(claims==1 and done==0)
+assert(descriptions[1]:find('กำลังรอเกมยืนยัน',1,true))
+assert(not descriptions[1]:find('รอบปัจจุบัน: รับแล้ว',1,true));a.Stop()
+`));
+test('official bootstrap preserves existing Masterp settings exactly',()=>run(`
+_G.Masterp_Description=nil
+local settings={Performance=true,UnlockFPS={Enable=true,TargetFps=17},CustomOption='preserve'}
+_G.MasterpSettings=settings
+game.HttpGet=function()return'_G.fixtureSettingsSeen=_G.MasterpSettings'end
+local a=launch();assert(coroutine.resume(workers[1]))
+assert(_G.fixtureSettingsSeen==settings and _G.MasterpSettings==settings)
+assert(settings.Performance==true and settings.UnlockFPS.TargetFps==17 and settings.CustomOption=='preserve');a.Stop()
+`));

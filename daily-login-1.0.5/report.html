@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<title>Anime Dice · เวลารับรางวัล 7 วัน</title>
+<style>
+:root{color-scheme:light;font-family:Thonburi,"Helvetica Neue",sans-serif;color:#153446;background:#eef5f7}*{box-sizing:border-box}body{margin:0;padding:6vh 22px}main{max-width:760px;margin:auto;background:#fff;border:1px solid #cedde3;border-radius:22px;padding:clamp(22px,5vw,46px)}header{display:flex;align-items:center;gap:14px}.die{font-size:42px;color:#d68c37}h1{font-size:24px;margin:0}header p,.muted{font-size:13px;color:#617b88}header p{margin:4px 0}section{margin-top:32px}.eyebrow{color:#466d83;font-size:13px;margin:0 0 12px}#countdown{font-family:Menlo,monospace;font-weight:600;font-size:clamp(29px,7vw,52px);letter-spacing:-2px;margin:12px 0}#date{line-height:1.8;font-size:17px}#days{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin:28px 0}.day{border:1px solid #cedde3;border-radius:12px;text-align:center;padding:14px 3px}.day b{display:block;font-size:22px}.day span{font-size:10px;color:#617b88}.done{background:#e8f2ec;border-color:#bad7c7}.next{border:2px solid #466d83;padding:13px 2px;background:#eef5f7}#note{padding:15px;background:#f4f7f8;border-radius:12px;font-size:13px;line-height:1.8}footer{border-top:1px solid #e4ecef;margin-top:28px;padding-top:20px}button{font:inherit;border:1px solid #cedde3;border-radius:9px;padding:10px 16px;color:#153446;background:#fff;cursor:pointer}button:focus-visible{outline:3px solid #d68c37;outline-offset:3px}#account{font-size:12px;color:#617b88}@media(max-width:480px){body{padding:16px 10px}#days{gap:4px}.day{padding:12px 1px}.day span{font-size:9px}h1{font-size:20px}}
+</style></head><body><main>
+<header><span class="die" aria-hidden="true">⚄</span><div><h1>Anime Dice</h1><p>สมุดรับรางวัล 7 วัน · เปิดดูได้แม้ปิดเกม</p></div></header>
+<section aria-live="polite"><p class="eyebrow" id="heading">วันและเวลารับครั้งถัดไป</p><div id="date"></div><div id="countdown">—</div></section>
+<div id="days" aria-label="วันที่รับรางวัล"></div><p id="account"></p><p id="note"></p>
+<footer><p id="sync" class="muted"></p><p class="muted">ไฟล์นี้นับเวลาต่อได้โดยไม่เปิด Roblox แต่รับรางวัลแทนคุณขณะออฟไลน์ไม่ได้ หลังรับรางวัลหรือเปลี่ยนบัญชี ให้รันสคริปต์ในเกมแล้วรีเฟรชไฟล์นี้</p><button id="refresh" type="button">อ่านข้อมูลล่าสุดจากไฟล์</button></footer>
+</main><script type="application/json" id="state">__STATE_JSON__</script>
+<script>
+'use strict';
+const state=JSON.parse(document.getElementById('state').textContent);
+const $=id=>document.getElementById(id);
+const valid=state.gameId===10708913337&&Number.isInteger(state.claimed)&&state.claimed>=0&&state.claimed<=7&&state.total===7&&Number.isFinite(state.serverOffset)&&Number.isFinite(state.serverObservedAt)&&(state.claimed===7||Number.isFinite(state.nextAt));
+const date=t=>new Intl.DateTimeFormat('th-TH',{dateStyle:'full',timeStyle:'medium',timeZone:'Asia/Bangkok'}).format(new Date(t*1000));
+function render(now=Date.now()){
+ if(!valid){$('heading').textContent='ข้อมูลไม่สมบูรณ์';$('countdown').textContent='ยังคำนวณไม่ได้';$('note').textContent='เข้า Anime Dice แล้วรันสคริปต์อีกครั้ง ห้ามใช้ไฟล์จากเกมอื่น';return;}
+ const left=Math.max(0,Math.ceil(state.nextAt-(now/1000+state.serverOffset)));
+ $('heading').textContent=state.claimed===7?'รับครบทั้ง 7 วันแล้ว':`รางวัลวันที่ ${state.claimed+1} · รอครบ ${state.cooldown/3600} ชั่วโมงจากครั้งล่าสุด`;
+ $('countdown').textContent=state.claimed===7?'ครบ 7 / 7':left===0?'ถึงเวลารับแล้ว':`${String(Math.floor(left/3600)).padStart(2,'0')} : ${String(Math.floor(left%3600/60)).padStart(2,'0')} : ${String(left%60).padStart(2,'0')}`;
+ $('date').textContent=state.claimed===7?'ไม่มีรอบถัดไปในชุดรางวัลนี้':`รับรางวัลวันที่ ${state.claimed+1} ครั้งถัดไป: ${date(state.nextAt)} (เวลาไทย)`;
+ $('account').textContent=`รับแล้ว ${state.claimed}/7 วัน · บัญชี ${state.userId}`;
+ $('sync').textContent=`ข้อมูลเกมยืนยันล่าสุด: ${date(state.serverObservedAt)} · ไม่ใช่สถานะสดหลังออกเกม`;
+ const warning={claim_unconfirmed:'ส่งคำขอแล้ว แต่เกมยังไม่ยืนยัน กรุณาเข้าเกมเพื่อตรวจสอบ — ยังไม่นับว่าได้รับรางวัล',waiting_server_confirmation:'กำลังรอเกมยืนยันการรับรางวัล — ยังไม่นับว่าสำเร็จ',state_reconciling:'ข้อมูลกำลังอัปเดต กรุณารันสคริปต์ในเกมอีกครั้ง',save_failed:'บันทึกไฟล์ไม่สำเร็จ ต้องซิงก์ใหม่'};
+ $('note').textContent=warning[state.reason]||(state.claimed===7?'ครบตามสถานะล่าสุดที่เกมส่งมาแล้ว':left===0?'ถึงเวลาจากข้อมูลล่าสุดแล้ว เข้าเกมและรันสคริปต์เพื่อรับ/ยืนยันรางวัลวันถัดไป':'ปิดหน้าไฟล์หรือปิดเกมได้ เมื่อเปิดใหม่จะคำนวณเวลาที่เหลือจากวันและเวลาที่บันทึกไว้');
+}
+if(valid){for(let day=1;day<=7;day++){const el=document.createElement('div');el.className='day'+(day<=state.claimed?' done':day===state.claimed+1?' next':'');const b=document.createElement('b');b.textContent=day;const text=document.createElement('span');text.textContent=day<=state.claimed?'รับแล้ว':day===state.claimed+1?'รอบถัดไป':'ยังไม่ถึง';el.append(b,text);$('days').append(el);}}
+$('refresh').addEventListener('click',()=>location.reload());render();setInterval(render,1000);
+</script></body></html>
