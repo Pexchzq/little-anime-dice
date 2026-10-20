@@ -1,6 +1,6 @@
--- GENERATED Anime Dice Daily Login 1.0.2
+-- GENERATED Anime Dice Daily Login 1.0.3
 local Daily=assert(loadstring([=[-- Pure schedule and bounded claim owner; all external IO is injected.
-local Daily={Version='1.0.2',GameId=10708913337}
+local Daily={Version='1.0.3',GameId=10708913337}
 local function finite(n)return type(n)=='number'and n==n and math.abs(n)<math.huge end
 local function integer(n)return finite(n)and n>=0 and n%1==0 end
 local function copy(t)local o={};for k,v in pairs(t)do o[k]=type(v)=='table'and copy(v)or v end;return o end
@@ -141,16 +141,21 @@ end
 return Masterp
 ]=],'@dice-daily/masterp'))()
 return assert(loadstring([=[local Daily,template,Masterp=...
+local P=game:GetService('Players');local H=game:GetService('HttpService')
+local untilAt=os.clock()+120
+while(not game:IsLoaded()or type(game.GameId)~='number'or game.GameId<=0)and os.clock()<untilAt do task.wait(.25)end
+assert(game:IsLoaded()and type(game.GameId)=='number'and game.GameId>0,'Anime Dice startup timed out: game identity not ready')
 assert(game.GameId==Daily.GameId,'This script is for Anime Dice only')
 assert(type(writefile)=='function'and type(readfile)=='function'and type(isfile)=='function','Executor file access required')
-local P=game:GetService('Players');local H=game:GetService('HttpService')
-local untilAt=os.clock()+60
-while(not game:IsLoaded()or not P.LocalPlayer or not P.LocalPlayer:FindFirstChild('PlayerGui'))and os.clock()<untilAt do task.wait(.25)end
+assert(type(getloadedmodules)=='function'and type(getconnections)=='function'and type(debug.info)=='function'
+    and type(debug.getupvalues)=='function','Executor native callback inspection required')
+while(not P.LocalPlayer or type(P.LocalPlayer.UserId)~='number'or P.LocalPlayer.UserId<=0
+    or not P.LocalPlayer:FindFirstChild('PlayerGui'))and os.clock()<untilAt do task.wait(.25)end
 local player=assert(P.LocalPlayer,'Player not ready');local gui=assert(player:FindFirstChild('PlayerGui'),'PlayerGui not ready')
-local old=rawget(_G,'DiceDailyLogin')
-if old then assert(old.Owned==true and type(old.Stop)=='function','Existing daily script owner conflict');old.Stop()end
+assert(type(player.UserId)=='number'and player.UserId>0,'Anime Dice startup timed out: player identity not ready')
 local data,config,callback
 local function findNative()
+    data=nil;config=nil;callback=nil
     for _,m in ipairs(getloadedmodules())do
         local n=m:GetFullName()
         if n=='ReplicatedStorage.Framework.Features.Data.DataController'then data=require(m)
@@ -170,10 +175,22 @@ local function findNative()
             end
         end
     end
-    return data and type(data.___X)=='table'and config and type(config.Rewards)=='table'and callback
+    return data and type(data.___X)=='table'and type(data.___X.DailyRewardsClaimed)=='number'
+        and type(data.___X.LastDailyRewardClaim)=='number'and config and type(config.Rewards)=='table'
+        and #config.Rewards==7 and type(config.Cooldown)=='number'and callback
 end
-while not findNative()and os.clock()<untilAt do task.wait(1)end
-assert(data and config and callback,'Daily reward data/button not ready; rerun after loading the lobby')
+-- Give native replication its own budget after the game/player are ready.
+untilAt=os.clock()+120
+local nativeReady=false
+repeat
+    local ok,ready=pcall(findNative)
+    nativeReady=ok and not not ready
+    if not nativeReady and os.clock()<untilAt then task.wait(.5)end
+until nativeReady or os.clock()>=untilAt
+assert(nativeReady,'Anime Dice startup timed out: daily reward data/button not ready')
+assert(game.GameId==Daily.GameId,'This script is for Anime Dice only')
+local old=rawget(_G,'DiceDailyLogin')
+if old then assert(old.Owned==true and type(old.Stop)=='function','Existing daily script owner conflict');old.Stop()end
 local statePath='dice_daily_'..player.UserId..'_state.json'
 local reportPath='dice_daily_'..player.UserId..'.html'
 local textPath='dice_daily_'..player.UserId..'_next_login.txt'
@@ -218,7 +235,7 @@ owner=Daily.Create({read=function()
 end,save=save,claim=function()
     assert(alive,'stopped');callback() -- Existing zero-argument UI callback, not a guessed wire call.
 end},{enabled=true,pending=existing and existing.pending,claimReceipt=existing and existing.claimReceipt})
-screen=Instance.new('ScreenGui');screen.Name='DiceDailyLogin_102';screen.ResetOnSpawn=false;screen.Parent=gui
+screen=Instance.new('ScreenGui');screen.Name='DiceDailyLogin_103';screen.ResetOnSpawn=false;screen.Parent=gui
 local box=Instance.new('Frame');box.Size=UDim2.fromOffset(360,215);box.Position=UDim2.new(1,-375,0,65);box.BackgroundColor3=Color3.fromRGB(238,245,247);box.Parent=screen
 local round=Instance.new('UICorner');round.CornerRadius=UDim.new(0,12);round.Parent=box
 local label=Instance.new('TextLabel');label.Size=UDim2.new(1,-24,0,165);label.Position=UDim2.fromOffset(12,6);label.BackgroundTransparency=1;label.TextWrapped=true;label.TextSize=14;label.Font=Enum.Font.Arial;label.TextColor3=Color3.fromRGB(21,52,70);label.Parent=box
